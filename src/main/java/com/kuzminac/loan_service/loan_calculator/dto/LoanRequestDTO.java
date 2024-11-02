@@ -13,6 +13,7 @@ import java.math.BigDecimal;
 @NoArgsConstructor
 @AllArgsConstructor
 @Builder
+@ToString
 public class LoanRequestDTO {
 
     @NotNull(message = "Loan amount is required")

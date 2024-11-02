@@ -7,6 +7,7 @@ import com.kuzminac.loan_service.loan_calculator.dto.PaymentScheduleDTO;
 import com.kuzminac.loan_service.loan_calculator.entity.Loan;
 import com.kuzminac.loan_service.loan_calculator.repository.LoanRepository;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
@@ -17,6 +18,7 @@ import java.util.List;
 
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class LoanServiceImpl implements LoanService {
 
     private final LoanRepository loanRepository;
@@ -44,6 +46,9 @@ public class LoanServiceImpl implements LoanService {
 
         // Persist loan details
         Loan savedLoan = loanRepository.save(createLoanEntity(principal, annualInterestRate, numberOfPayments, totalPayment, totalInterest));
+        log.info("Loan calculation successful, saved loan ID: {}", savedLoan.getId());
+
+
 
         // Build and return response DTO
         return buildLoanResponse(savedLoan, principal, annualInterestRate, numberOfPayments, totalPayment, totalInterest, schedule);
