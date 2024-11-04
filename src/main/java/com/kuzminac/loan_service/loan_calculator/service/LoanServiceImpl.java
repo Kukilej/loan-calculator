@@ -5,12 +5,15 @@ import com.kuzminac.loan_service.loan_calculator.dto.LoanRequestDTO;
 import com.kuzminac.loan_service.loan_calculator.dto.LoanResponseDTO;
 import com.kuzminac.loan_service.loan_calculator.dto.PaymentScheduleDTO;
 import com.kuzminac.loan_service.loan_calculator.entity.Loan;
+import com.kuzminac.loan_service.loan_calculator.exception.LoanCalculationException;
 import com.kuzminac.loan_service.loan_calculator.repository.LoanRepository;
+import jakarta.transaction.Transactional;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
+import java.math.MathContext;
 import java.math.RoundingMode;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -23,7 +26,12 @@ public class LoanServiceImpl implements LoanService {
 
     private final LoanRepository loanRepository;
 
+    // Increased precision to prevent rounding errors during calculations
+    private static final MathContext MC = new MathContext(20, RoundingMode.HALF_UP);
+    private static final int SCALE = 10;
+
     @Override
+    @Transactional
     public LoanResponseDTO calculateLoan(LoanRequestDTO requestDTO) {
 
         // Extract loan details from request
@@ -37,99 +45,89 @@ public class LoanServiceImpl implements LoanService {
         // Calculate monthly payment using the loan formula
         BigDecimal payment = calculateMonthlyPayment(principal, monthlyInterestRate, numberOfPayments);
 
-        // Calculate total payment and total interest
-        BigDecimal totalPayment = payment.multiply(BigDecimal.valueOf(numberOfPayments));
-        BigDecimal totalInterest = totalPayment.subtract(principal);
+        // Calculate total payment and total interest with high precision
+        BigDecimal totalPayment = payment.multiply(BigDecimal.valueOf(numberOfPayments), MC);
+        totalPayment = totalPayment.setScale(2, RoundingMode.HALF_UP);
+        BigDecimal totalInterest = totalPayment.subtract(principal).setScale(2, RoundingMode.HALF_UP);
+        log.debug("Total Payment: {}, Total Interest: {}", totalPayment, totalInterest);
 
         // Generate payment schedule
         List<PaymentScheduleDTO> schedule = generatePaymentSchedule(principal, monthlyInterestRate, numberOfPayments, payment);
+        log.debug("Generated payment schedule with {} periods", schedule.size());
 
         // Persist loan details
         Loan savedLoan = loanRepository.save(createLoanEntity(principal, annualInterestRate, numberOfPayments, totalPayment, totalInterest));
         log.info("Loan calculation successful, saved loan ID: {}", savedLoan.getId());
 
-
-
         // Build and return response DTO
         return buildLoanResponse(savedLoan, principal, annualInterestRate, numberOfPayments, totalPayment, totalInterest, schedule);
     }
 
-
-    /**
-     * Calculates the monthly interest rate from the annual interest rate.
-     *
-     * @param annualRate Annual interest rate as a percentage (e.g., 4.875 for 4.875%)
-     * @return Monthly interest rate as a decimal
-     */
     private BigDecimal calculateMonthlyInterestRate(BigDecimal annualRate) {
         return annualRate
-                .divide(BigDecimal.valueOf(100), 10, RoundingMode.HALF_UP)
-                .divide(BigDecimal.valueOf(12), 10, RoundingMode.HALF_UP);
+                .divide(BigDecimal.valueOf(100), SCALE, RoundingMode.HALF_UP)
+                .divide(BigDecimal.valueOf(12), SCALE, RoundingMode.HALF_UP);
     }
-
-    /**
-     * Calculates the monthly payment using the loan formula.
-     *
-     * @param principal            Loan amount
-     * @param monthlyInterestRate  Monthly interest rate
-     * @param numberOfPayments     Total number of payments
-     * @return Monthly payment amount
-     */
     private BigDecimal calculateMonthlyPayment(BigDecimal principal, BigDecimal monthlyInterestRate, int numberOfPayments) {
-        BigDecimal numerator = monthlyInterestRate.multiply(principal);
-        BigDecimal denominator = BigDecimal.ONE.subtract(
-                BigDecimal.ONE.add(monthlyInterestRate).pow(-numberOfPayments, new java.math.MathContext(10))
-        );
-        return numerator.divide(denominator, 2, RoundingMode.HALF_UP);
+
+        // Handle the scenario where the interest rate is zero
+        if (monthlyInterestRate.compareTo(BigDecimal.ZERO) == 0) {
+            return principal.divide(BigDecimal.valueOf(numberOfPayments), 2, RoundingMode.HALF_UP);
+        }
+
+        try {
+            BigDecimal onePlusRate = BigDecimal.ONE.add(monthlyInterestRate, MC);
+            BigDecimal onePlusRatePowN = onePlusRate.pow(numberOfPayments, MC);
+
+            // Calculate the denominator: [1 - (1 + r)^-n] = [1 - 1 / (1 + r)^n]
+            BigDecimal denominator = BigDecimal.ONE.subtract(BigDecimal.ONE.divide(onePlusRatePowN, SCALE, RoundingMode.HALF_UP), MC);
+
+            // Calculate the numerator: r * principal
+            BigDecimal numerator = monthlyInterestRate.multiply(principal, MC);
+
+
+            // Compute the monthly payment: (r * principal) / denominator
+            BigDecimal payment = numerator.divide(denominator, SCALE, RoundingMode.HALF_UP);
+
+            // Round the payment to two decimal places for actual payment
+            return payment.setScale(2, RoundingMode.HALF_UP);
+
+        } catch (ArithmeticException ae) {
+            log.error("Arithmetic error during monthly payment calculation: {}", ae.getMessage(), ae);
+            throw new LoanCalculationException("Error occurred while calculating the monthly payment.", ae);
+        }
     }
-
-
-    /**
-     * Generates the payment schedule for the loan.
-     *
-     * @param principal            Loan amount
-     * @param monthlyInterestRate  Monthly interest rate
-     * @param numberOfPayments     Total number of payments
-     * @param payment              Monthly payment amount
-     * @return List of payment schedule entries
-     */
     private List<PaymentScheduleDTO> generatePaymentSchedule(BigDecimal principal, BigDecimal monthlyInterestRate, int numberOfPayments, BigDecimal payment) {
         List<PaymentScheduleDTO> schedule = new ArrayList<>();
         BigDecimal balance = principal;
 
         for (int period = 1; period <= numberOfPayments; period++) {
-            BigDecimal interest = balance.multiply(monthlyInterestRate).setScale(2, RoundingMode.HALF_UP);
-            BigDecimal principalAmount = payment.subtract(interest).setScale(2, RoundingMode.HALF_UP);
-            balance = balance.subtract(principalAmount).setScale(2, RoundingMode.HALF_UP);
 
-            // Adjust final payment if balance goes negative
-            if (balance.compareTo(BigDecimal.ZERO) < 0) {
+            BigDecimal interest = balance.multiply(monthlyInterestRate, MC);
+            interest = interest.setScale(10, RoundingMode.HALF_UP);
+            BigDecimal principalAmount = payment.subtract(interest).setScale(10, RoundingMode.HALF_UP);
+            balance = balance.subtract(principalAmount).setScale(10, RoundingMode.HALF_UP);
+
+            // For the last payment, adjust for any residual due to rounding
+            if (period == numberOfPayments && balance.compareTo(BigDecimal.ZERO) != 0) {
                 principalAmount = principalAmount.add(balance);
                 balance = BigDecimal.ZERO;
             }
 
-            schedule.add(PaymentScheduleDTO.builder()
+            // Round for display purposes
+            PaymentScheduleDTO paymentDTO = PaymentScheduleDTO.builder()
                     .period(period)
-                    .payment(payment)
-                    .principalAmount(principalAmount)
-                    .interestAmount(interest)
-                    .balanceOwed(balance)
-                    .build());
-        }
+                    .payment(payment.setScale(2, RoundingMode.HALF_UP))
+                    .principalAmount(principalAmount.setScale(2, RoundingMode.HALF_UP))
+                    .interestAmount(interest.setScale(2, RoundingMode.HALF_UP))
+                    .balanceOwed(balance.max(BigDecimal.ZERO).setScale(2, RoundingMode.HALF_UP))
+                    .build();
 
+            schedule.add(paymentDTO);
+        }
         return schedule;
     }
 
-    /**
-     * Creates a Loan entity from the provided details.
-     *
-     * @param principal        Loan amount
-     * @param annualRate       Annual interest rate
-     * @param payments         Number of payments
-     * @param totalPayment     Total payment over the loan period
-     * @param totalInterest    Total interest paid
-     * @return Loan entity
-     */
     private Loan createLoanEntity(BigDecimal principal, BigDecimal annualRate, int payments, BigDecimal totalPayment, BigDecimal totalInterest) {
         return Loan.builder()
                 .loanAmount(principal)
@@ -140,19 +138,6 @@ public class LoanServiceImpl implements LoanService {
                 .createdAt(LocalDateTime.now())
                 .build();
     }
-
-    /**
-     * Builds the LoanResponseDTO from the saved loan and calculated details.
-     *
-     * @param loan              Saved Loan entity
-     * @param principal         Loan amount
-     * @param annualRate        Annual interest rate
-     * @param payments          Number of payments
-     * @param totalPayment      Total payment over the loan period
-     * @param totalInterest     Total interest paid
-     * @param schedule          Payment schedule
-     * @return LoanResponseDTO
-     */
     private LoanResponseDTO buildLoanResponse(Loan loan, BigDecimal principal, BigDecimal annualRate, int payments, BigDecimal totalPayment, BigDecimal totalInterest, List<PaymentScheduleDTO> schedule) {
         return LoanResponseDTO.builder()
                 .loanId(loan.getId())
@@ -164,5 +149,4 @@ public class LoanServiceImpl implements LoanService {
                 .paymentSchedule(schedule)
                 .build();
     }
-
 }

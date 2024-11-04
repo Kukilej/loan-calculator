@@ -21,7 +21,7 @@ public class LoanRequestDTO {
     private BigDecimal loanAmount;
 
     @NotNull(message = "Interest rate is required")
-    @DecimalMin(value = "0.0001", message = "Interest rate must be greater than 0")
+    @DecimalMin(value = "0.0", message = "Interest rate must be at least 0")
     private BigDecimal interestRate;
 
     @NotNull(message = "Number of payments is required")

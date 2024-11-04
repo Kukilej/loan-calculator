@@ -1,0 +1,42 @@
+# File: src/main/resources/application.yml
+
+spring:
+  application:
+    name: loan-calculator
+  datasource:
+    url: jdbc:postgresql://localhost:5432/postgres
+    username: user
+    password: password
+    driver-class-name: org.postgresql.Driver
+  jpa:
+    hibernate:
+      ddl-auto: none
+    show-sql: true
+    open-in-view: false
+    properties:
+      hibernate:
+        format_sql: true
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+
+server:
+  port: 8080
+
+logging:
+  level:
+    root: INFO
+    com.kuzminac.loan_service.loan_calculator: INFO
+    org.testcontainers: WARN
+    org.springframework: WARN
+    com.github.dockerjava: WARN
+
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"
+
+app:
+  api:
+    title: Loan Calculator API
+    version: 1.0.0
+    description: API documentation for the Loan Calculator service.
