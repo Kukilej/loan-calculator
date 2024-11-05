@@ -8,6 +8,8 @@ spring:
     username: user
     password: password
     driver-class-name: org.postgresql.Driver
+    hikari:
+      connection-timeout: 5000 # 5 seconds
   jpa:
     hibernate:
       ddl-auto: none
